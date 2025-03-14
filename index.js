@@ -1,38 +1,72 @@
-import Koa from 'koa'
-import bodyParser from 'koa-bodyparser'
-import Router from 'koa-router'
-import { client, redirectUrl, randomString } from './config.js'
-import * as fs from 'fs'
+import Koa from 'koa';
+import bodyParser from 'koa-bodyparser';
+import Router from 'koa-router';
+import cors from '@koa/cors';
+import { client, redirectUrl, randomString } from './config.js';
+import * as fs from 'fs';
 import open from 'open';
+import { WebSocketServer } from 'ws'; // Importa WebSocketServer desde 'ws'
 
-const app = new Koa()
+const app = new Koa();
 
-app.use(bodyParser())
+app.use(bodyParser());
+app.use(cors({
+  origin: '*', // Permite todas las solicitudes de origen cruzado
+  allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowHeaders: ['Content-Type', 'Authorization']
+}));
 
-const router = new Router()
+const router = new Router();
+
+// Crear un servidor HTTP
+const server = app.listen(8000);
+
+// Crear un servidor WebSocket
+const wss = new WebSocketServer({ server }); // Usa WebSocketServer en lugar de WebSocket.Server
+
+// Manejar conexiones WebSocket
+wss.on('connection', (ws) => {
+  console.log('Nueva conexión WebSocket establecida');
+
+  // Enviar un mensaje de bienvenida al cliente
+  ws.send(JSON.stringify({ type: 'welcome', message: 'Conexión WebSocket establecida' }));
+
+  // Manejar mensajes recibidos del cliente
+  ws.on('message', (message) => {
+    console.log(`Mensaje recibido: ${message}`);
+    // Aquí puedes manejar los mensajes recibidos del cliente
+    // Por ejemplo, podrías enviar una respuesta basada en el mensaje recibido
+    ws.send(JSON.stringify({ type: 'response', message: 'Mensaje recibido' }));
+  });
+
+  // Manejar el cierre de la conexión
+  ws.on('close', () => {
+    console.log('Conexión WebSocket cerrada');
+  });
+});
 
 // Función para obtener solo los datos relevantes de los dispositivos
 const getSimplifiedDevices = async () => {
   // Si el archivo no existe, reportar un error directamente
   if (!fs.existsSync('./token.json')) {
-    throw new Error('token.json not found, please run login.js first')
+    throw new Error('token.json not found, please run login.js first');
   }
-  
+
   // Obtener token
-  let LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
-  client.at = LoggedInfo.data?.accessToken
-  client.region = LoggedInfo?.region || 'eu'
-  client.setUrl(LoggedInfo?.region || 'eu')
-  
+  let LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
+  client.at = LoggedInfo.data?.accessToken;
+  client.region = LoggedInfo?.region || 'eu';
+  client.setUrl(LoggedInfo?.region || 'eu');
+
   // Comprobar si el token ha expirado y renovarlo si es necesario
   if (
     LoggedInfo.data?.atExpiredTime < Date.now() &&
     LoggedInfo.data?.rtExpiredTime > Date.now()
   ) {
-    console.log('Token expired, refreshing token')
+    console.log('Token expired, refreshing token');
     const refreshStatus = await client.user.refreshToken({
       rt: LoggedInfo.data?.refreshToken,
-    })
+    });
     if (refreshStatus.error === 0) {
       fs.writeFileSync(
         './token.json',
@@ -49,27 +83,27 @@ const getSimplifiedDevices = async () => {
           },
           region: client.region,
         })
-      )
-      LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
+      );
+      LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
     }
   }
-  
+
   if (LoggedInfo.data?.rtExpiredTime < Date.now()) {
-    console.log('Failed to refresh token, need to log in again to obtain token')
-    return { error: 1, msg: 'Token expired, please login again' }
+    console.log('Failed to refresh token, need to log in again to obtain token');
+    return { error: 1, msg: 'Token expired, please login again' };
   }
-  
+
   // Obtener lista de dispositivos
   try {
-    let response = await client.device.getAllThingsAllPages({})
-    
+    let response = await client.device.getAllThingsAllPages({});
+
     if (response?.error === 0 && response?.data?.thingList) {
       // Extraer solo los dispositivos (no grupos u otros elementos)
       const devices = response.data.thingList
         .filter(thing => thing.itemType === 1)
         .map(thing => {
           const device = thing.itemData;
-          
+
           // Crear un objeto simplificado con solo la información relevante
           const simplifiedDevice = {
             id: device.deviceid,
@@ -78,7 +112,7 @@ const getSimplifiedDevices = async () => {
             online: device.online || false,
             model: device.productModel || device.extra?.model || 'Unknown',
           };
-          
+
           // Agregar información específica de estado según el tipo de dispositivo
           if (device.extra?.uiid === 1) {
             // Dispositivo de un solo canal
@@ -94,45 +128,45 @@ const getSimplifiedDevices = async () => {
             simplifiedDevice.temperature = device.params?.currentTemperature;
             simplifiedDevice.humidity = device.params?.currentHumidity;
           }
-          
+
           return simplifiedDevice;
         });
-      
+
       return {
         error: 0,
         total: devices.length,
         devices: devices
       };
     } else {
-      return { error: response.error, msg: response.msg || 'Error getting devices' }
+      return { error: response.error, msg: response.msg || 'Error getting devices' };
     }
   } catch (e) {
-    console.error(e)
-    return { error: 1, msg: e.message || 'Error getting devices' }
+    console.error(e);
+    return { error: 1, msg: e.message || 'Error getting devices' };
   }
-}
+};
 
 // Función para controlar un dispositivo específico
 const controlSpecificDevice = async (deviceId, params) => {
   if (!fs.existsSync('./token.json')) {
-    throw new Error('token.json not found, please run login.js first')
+    throw new Error('token.json not found, please run login.js first');
   }
-  
+
   // Obtener token
-  let LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
-  client.at = LoggedInfo.data?.accessToken
-  client.region = LoggedInfo?.region || 'eu'
-  client.setUrl(LoggedInfo?.region || 'eu')
-  
+  let LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
+  client.at = LoggedInfo.data?.accessToken;
+  client.region = LoggedInfo?.region || 'eu';
+  client.setUrl(LoggedInfo?.region || 'eu');
+
   // Comprobar si el token ha expirado y renovarlo si es necesario
   if (
     LoggedInfo.data?.atExpiredTime < Date.now() &&
     LoggedInfo.data?.rtExpiredTime > Date.now()
   ) {
-    console.log('Token expired, refreshing token')
+    console.log('Token expired, refreshing token');
     const refreshStatus = await client.user.refreshToken({
       rt: LoggedInfo.data?.refreshToken,
-    })
+    });
     if (refreshStatus.error === 0) {
       fs.writeFileSync(
         './token.json',
@@ -149,28 +183,40 @@ const controlSpecificDevice = async (deviceId, params) => {
           },
           region: client.region,
         })
-      )
-      LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'))
+      );
+      LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
     }
   }
-  
+
   if (LoggedInfo.data?.rtExpiredTime < Date.now()) {
-    console.log('Failed to refresh token, need to log in again to obtain token')
-    return { error: 1, msg: 'Token expired, please login again' }
+    console.log('Failed to refresh token, need to log in again to obtain token');
+    return { error: 1, msg: 'Token expired, please login again' };
   }
-  
+
   try {
     const result = await client.device.setThingStatus({
       type: 1,
       id: deviceId,
       params: params,
     });
+
+    // Notificar a todos los clientes conectados que los dispositivos han sido actualizados
+    const devices = await getSimplifiedDevices();
+    wss.clients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(JSON.stringify({
+          type: 'devices_updated',
+          devices: devices
+        }));
+      }
+    });
+
     return result;
   } catch (e) {
-    console.error(e)
-    return { error: 1, msg: e.message || 'Error controlling device' }
+    console.error(e);
+    return { error: 1, msg: e.message || 'Error controlling device' };
   }
-}
+};
 
 router.get('/login', async (ctx) => {
   // Obtener URL de inicio de sesión
@@ -178,25 +224,25 @@ router.get('/login', async (ctx) => {
     redirectUrl: redirectUrl,
     grantType: 'authorization_code',
     state: randomString(10),
-  })
+  });
   // Redirigir automáticamente a la URL de inicio de sesión
-  ctx.redirect(loginUrl)
-})
+  ctx.redirect(loginUrl);
+});
 
 router.get('/redirectUrl', async (ctx) => {
-  const { code, region } = ctx.request.query
-  console.log(code, region)
+  const { code, region } = ctx.request.query;
+  console.log(code, region);
   const res = await client.oauth.getToken({
     region,
     redirectUrl,
     code,
-  })
-  res['region'] = region
+  });
+  res['region'] = region;
   // Puedes escribir tu propio código aquí
-  fs.writeFileSync('./token.json', JSON.stringify(res))
-  console.log(res)
-  ctx.body = res
-})
+  fs.writeFileSync('./token.json', JSON.stringify(res));
+  console.log(res);
+  ctx.body = res;
+});
 
 // Nueva ruta para obtener dispositivos simplificados
 router.get('/devices', async (ctx) => {
@@ -207,7 +253,7 @@ router.get('/devices', async (ctx) => {
     ctx.status = 500;
     ctx.body = { error: 1, msg: e.message || 'Internal Server Error' };
   }
-})
+});
 
 // Ruta para controlar un dispositivo específico
 router.post('/control/:deviceId', async (ctx) => {
@@ -220,13 +266,13 @@ router.post('/control/:deviceId', async (ctx) => {
     ctx.status = 500;
     ctx.body = { error: 1, msg: e.message || 'Internal Server Error' };
   }
-})
+});
 
 // Ruta para obtener una página HTML que muestra los dispositivos simplificados
 router.get('/devices-ui', async (ctx) => {
   try {
     const devicesData = await getSimplifiedDevices();
-    
+
     ctx.type = 'html';
     ctx.body = `
       <!DOCTYPE html>
@@ -325,26 +371,41 @@ router.get('/devices-ui', async (ctx) => {
         </div>
 
         <script>
+          // Conectar al servidor WebSocket
+          const ws = new WebSocket('ws://127.0.0.1:8000');
+
+          ws.onmessage = (event) => {
+            const message = JSON.parse(event.data);
+
+            if (message.type === 'devices_updated') {
+              // Actualizar los datos de los dispositivos
+              devicesData = message.devices;
+
+              // Volver a renderizar los dispositivos
+              renderDevices();
+            }
+          };
+
           // Los datos de dispositivos que se obtuvieron del servidor
-          const devicesData = ${JSON.stringify(devicesData)};
-          
+          let devicesData = ${JSON.stringify(devicesData)};
+
           function renderDevices() {
             const deviceListElement = document.getElementById('deviceList');
-            
+
             if (devicesData.error) {
               deviceListElement.innerHTML = \`<p class="error">\${devicesData.msg}</p>\`;
               return;
             }
-            
+
             const devices = devicesData.devices || [];
-            
+
             if (devices.length === 0) {
               deviceListElement.innerHTML = '<p>No devices found</p>';
               return;
             }
-            
+
             let html = '';
-            
+
             devices.forEach(device => {
               html += \`
                 <div class="device" id="device-\${device.id}">
@@ -358,22 +419,22 @@ router.get('/devices-ui', async (ctx) => {
                     <p><strong>Model:</strong> \${device.model}</p>
                     <p><strong>Type:</strong> \${device.type}</p>
               \`;
-              
+
               // Mostrar estado específico según el tipo de dispositivo
               if (device.state) {
                 html += \`<p><strong>State:</strong> \${device.state}</p>\`;
               }
-              
+
               if (device.temperature) {
                 html += \`<p><strong>Temperature:</strong> \${device.temperature}°C</p>\`;
               }
-              
+
               if (device.humidity) {
                 html += \`<p><strong>Humidity:</strong> \${device.humidity}%</p>\`;
               }
-              
+
               html += \`</div><div class="controls">\`;
-              
+
               // Agregar controles específicos según el tipo de dispositivo
               if (device.type == 1) {
                 html += \`
@@ -393,22 +454,22 @@ router.get('/devices-ui', async (ctx) => {
                   \`;
                 });
               }
-              
+
               html += \`
                   </div>
                   <div id="status-\${device.id}"></div>
                 </div>
               \`;
             });
-            
+
             deviceListElement.innerHTML = html;
           }
-          
+
           async function controlDevice(deviceId, params) {
             try {
               const statusElement = document.getElementById(\`status-\${deviceId}\`);
               statusElement.innerHTML = '<p>Processing...</p>';
-              
+
               const response = await fetch(\`/control/\${deviceId}\`, {
                 method: 'POST',
                 headers: {
@@ -416,15 +477,11 @@ router.get('/devices-ui', async (ctx) => {
                 },
                 body: JSON.stringify(params)
               });
-              
+
               const result = await response.json();
-              
+
               if (result.error === 0) {
                 statusElement.innerHTML = '<p class="success">Command sent successfully!</p>';
-                // Esperar 2 segundos y recargar los dispositivos
-                setTimeout(() => {
-                  window.location.reload();
-                }, 2000);
               } else {
                 statusElement.innerHTML = \`<p class="error">Error: \${result.msg || 'Unknown error'}</p>\`;
               }
@@ -433,7 +490,7 @@ router.get('/devices-ui', async (ctx) => {
               statusElement.innerHTML = \`<p class="error">Error: \${error.message || 'Unknown error'}</p>\`;
             }
           }
-          
+
           // Renderizar los dispositivos cuando la página se cargue
           window.onload = renderDevices;
         </script>
@@ -446,15 +503,13 @@ router.get('/devices-ui', async (ctx) => {
   }
 });
 
-app.use(router.routes())
+app.use(router.routes());
 
-app.listen(8000)
-
-console.info('Server is running at http://127.0.0.1:8000/')
-console.info('Login URL: http://127.0.0.1:8000/login, automatically open browser in three seconds')
-console.info('Simplified Devices URL: http://127.0.0.1:8000/devices (JSON API)')
-console.info('Devices UI URL: http://127.0.0.1:8000/devices-ui (Web Interface)')
+console.info('Server is running at http://127.0.0.1:8000/');
+console.info('Login URL: http://127.0.0.1:8000/login, automatically open browser in three seconds');
+console.info('Simplified Devices URL: http://127.0.0.1:8000/devices (JSON API)');
+console.info('Devices UI URL: http://127.0.0.1:8000/devices-ui (Web Interface)');
 
 setTimeout(async () => {
-  await open("http://127.0.0.1:8000/login")
-}, 3000)
+  await open("http://127.0.0.1:8000/login");
+}, 3000);
