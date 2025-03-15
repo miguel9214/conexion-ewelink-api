@@ -98,7 +98,6 @@ const getSimplifiedDevices = async () => {
     let response = await client.device.getAllThingsAllPages({});
 
     if (response?.error === 0 && response?.data?.thingList) {
-      // Extraer solo los dispositivos (no grupos u otros elementos)
       const devices = response.data.thingList
         .filter(thing => thing.itemType === 1)
         .map(thing => {
@@ -117,10 +116,11 @@ const getSimplifiedDevices = async () => {
           if (device.extra?.uiid === 1) {
             // Dispositivo de un solo canal
             simplifiedDevice.state = device.params?.switch || 'Unknown';
-          } else if (device.extra?.uiid === 4) {
-            // Dispositivo multicanal
+          } else if (device.extra?.uiid === 162) {
+            // Dispositivo de 3 vías
             simplifiedDevice.channels = (device.params?.switches || []).map((sw, index) => ({
               channel: index + 1,
+              name: getChannelName(index + 1), // Nombre personalizado del canal
               state: sw.switch || 'Unknown'
             }));
           } else if (device.extra?.uiid === 102) {
@@ -143,6 +143,20 @@ const getSimplifiedDevices = async () => {
   } catch (e) {
     console.error(e);
     return { error: 1, msg: e.message || 'Error getting devices' };
+  }
+};
+
+// Función para obtener el nombre personalizado del canal
+const getChannelName = (channelNumber) => {
+  switch (channelNumber) {
+    case 1:
+      return 'POLICIA';
+    case 2:
+      return 'EMERGENCIA';
+    case 3:
+      return 'BOMBEROS';
+    default:
+      return `Canal ${channelNumber}`; // Por defecto, si hay más canales
   }
 };
 
@@ -194,26 +208,29 @@ const controlSpecificDevice = async (deviceId, params) => {
   }
 
   try {
+    console.log(`Attempting to control device ${deviceId} with params:`, params);
     const result = await client.device.setThingStatus({
       type: 1,
       id: deviceId,
       params: params,
     });
 
-    // Notificar a todos los clientes conectados que los dispositivos han sido actualizados
-    const devices = await getSimplifiedDevices();
+    console.log('Control result:', result);
+
+    // Enviar un mensaje a todos los clientes conectados
     wss.clients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(JSON.stringify({
-          type: 'devices_updated',
-          devices: devices
+          type: 'deviceUpdate',
+          deviceId: deviceId,
+          params: params,
         }));
       }
     });
 
     return result;
   } catch (e) {
-    console.error(e);
+    console.error('Error controlling device:', e);
     return { error: 1, msg: e.message || 'Error controlling device' };
   }
 };
@@ -371,23 +388,30 @@ router.get('/devices-ui', async (ctx) => {
         </div>
 
         <script>
-          // Conectar al servidor WebSocket
-          const ws = new WebSocket('ws://127.0.0.1:8000');
+          // Conexión WebSocket
+          const ws = new WebSocket('ws://127.0.0.1:8000'); // Asegúrate de que la URL sea correcta
 
           ws.onmessage = (event) => {
             const message = JSON.parse(event.data);
-
-            if (message.type === 'devices_updated') {
-              // Actualizar los datos de los dispositivos
-              devicesData = message.devices;
-
-              // Volver a renderizar los dispositivos
-              renderDevices();
+            
+            if (message.type === 'deviceUpdate') {
+              const { deviceId, params } = message;
+              // Aquí puedes actualizar el estado del dispositivo en la interfaz
+              const deviceElement = document.getElementById(\`device-\${deviceId}\`);
+              if (deviceElement) {
+                // Actualiza el estado del dispositivo según los parámetros recibidos
+                if (params.switch !== undefined) {
+                  const statusBadge = deviceElement.querySelector('.status-badge');
+                  statusBadge.textContent = params.switch === 'on' ? 'ONLINE' : 'OFFLINE';
+                  statusBadge.className = \`status-badge \${params.switch === 'on' ? 'online' : 'offline'}\`;
+                }
+                // Actualiza otros estados según sea necesario
+              }
             }
           };
 
           // Los datos de dispositivos que se obtuvieron del servidor
-          let devicesData = ${JSON.stringify(devicesData)};
+          const devicesData = ${JSON.stringify(devicesData)};
 
           function renderDevices() {
             const deviceListElement = document.getElementById('deviceList');
@@ -425,27 +449,11 @@ router.get('/devices-ui', async (ctx) => {
                 html += \`<p><strong>State:</strong> \${device.state}</p>\`;
               }
 
-              if (device.temperature) {
-                html += \`<p><strong>Temperature:</strong> \${device.temperature}°C</p>\`;
-              }
-
-              if (device.humidity) {
-                html += \`<p><strong>Humidity:</strong> \${device.humidity}%</p>\`;
-              }
-
-              html += \`</div><div class="controls">\`;
-
-              // Agregar controles específicos según el tipo de dispositivo
-              if (device.type == 1) {
-                html += \`
-                  <button onclick="controlDevice('\${device.id}', {'switch': 'on'})">Turn ON</button>
-                  <button onclick="controlDevice('\${device.id}', {'switch': 'off'})">Turn OFF</button>
-                \`;
-              } else if (device.type == 4 && device.channels) {
+              if (device.channels) {
                 device.channels.forEach(channel => {
                   html += \`
                     <div class="channel">
-                      <span>Channel \${channel.channel}: \${channel.state}</span>
+                      <span>\${channel.name}: \${channel.state}</span>
                       <div style="margin-top: 5px;">
                         <button onclick="controlDevice('\${device.id}', {switches: [{switch: 'on', outlet: \${channel.channel - 1}}]})">ON</button>
                         <button onclick="controlDevice('\${device.id}', {switches: [{switch: 'off', outlet: \${channel.channel - 1}}]})">OFF</button>
@@ -482,6 +490,10 @@ router.get('/devices-ui', async (ctx) => {
 
               if (result.error === 0) {
                 statusElement.innerHTML = '<p class="success">Command sent successfully!</p>';
+                // Esperar 2 segundos y recargar los dispositivos
+                setTimeout(() => {
+                  window.location.reload();
+                }, 2000);
               } else {
                 statusElement.innerHTML = \`<p class="error">Error: \${result.msg || 'Unknown error'}</p>\`;
               }
