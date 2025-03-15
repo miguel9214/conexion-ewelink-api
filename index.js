@@ -1,130 +1,154 @@
-import Koa from 'koa';
-import bodyParser from 'koa-bodyparser';
-import Router from 'koa-router';
-import cors from '@koa/cors';
-import { client, redirectUrl, randomString } from './config.js';
-import * as fs from 'fs';
-import open from 'open';
-import { WebSocketServer } from 'ws'; // Importa WebSocketServer desde 'ws'
+import Koa from "koa"; // Framework para crear el servidor web
+import bodyParser from "koa-bodyparser"; // Middleware para analizar el cuerpo de las peticiones HTTP
+import Router from "koa-router"; // Enrutador para manejar rutas HTTP
+import cors from "@koa/cors"; // Middleware para permitir peticiones de origen cruzado (CORS)
+import { client, redirectUrl, randomString } from "./config.js"; // Importación de configuraciones
+import * as fs from "fs"; // Módulo para trabajar con el sistema de archivos
+import open from "open"; // Módulo para abrir URLs en el navegador predeterminado
+import { WebSocketServer, WebSocket } from "ws"; // Módulos para crear servidor WebSocket
 
+// Crear aplicación Koa
 const app = new Koa();
 
-app.use(bodyParser());
-app.use(cors({
-  origin: '*', // Permite todas las solicitudes de origen cruzado
-  allowMethods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowHeaders: ['Content-Type', 'Authorization']
-}));
+// Configurar middlewares
+app.use(bodyParser()); // Analizar cuerpos de peticiones
+app.use(
+  cors({
+    // Configurar CORS para permitir peticiones desde cualquier origen
+    origin: "*", // Permitir todos los orígenes
+    allowMethods: ["GET", "POST", "PUT", "DELETE"], // Métodos HTTP permitidos
+    allowHeaders: ["Content-Type", "Authorization"], // Cabeceras permitidas
+  })
+);
 
+// Crear un enrutador
 const router = new Router();
 
-// Crear un servidor HTTP
+// Iniciar servidor HTTP en el puerto 8000
 const server = app.listen(8000);
 
-// Crear un servidor WebSocket
-const wss = new WebSocketServer({ server }); // Usa WebSocketServer en lugar de WebSocket.Server
+// Crear servidor WebSocket utilizando el mismo servidor HTTP
+const wss = new WebSocketServer({ server });
 
-// Manejar conexiones WebSocket
-wss.on('connection', (ws) => {
-  console.log('Nueva conexión WebSocket establecida');
+// Manejar eventos de conexión WebSocket
+wss.on("connection", (ws) => {
+  console.log("Nueva conexión WebSocket establecida");
 
-  // Enviar un mensaje de bienvenida al cliente
-  ws.send(JSON.stringify({ type: 'welcome', message: 'Conexión WebSocket establecida' }));
+  // Enviar mensaje de bienvenida al cliente que se conecta
+  ws.send(
+    JSON.stringify({
+      type: "welcome",
+      message: "Conexión WebSocket establecida",
+    })
+  );
 
   // Manejar mensajes recibidos del cliente
-  ws.on('message', (message) => {
+  ws.on("message", (message) => {
     console.log(`Mensaje recibido: ${message}`);
-    // Aquí puedes manejar los mensajes recibidos del cliente
-    // Por ejemplo, podrías enviar una respuesta basada en el mensaje recibido
-    ws.send(JSON.stringify({ type: 'response', message: 'Mensaje recibido' }));
+    // Responder al cliente
+    ws.send(JSON.stringify({ type: "response", message: "Mensaje recibido" }));
   });
 
-  // Manejar el cierre de la conexión
-  ws.on('close', () => {
-    console.log('Conexión WebSocket cerrada');
+  // Manejar cierre de conexión
+  ws.on("close", () => {
+    console.log("Conexión WebSocket cerrada");
   });
+
+  // Enviar el estado actual de los dispositivos al nuevo cliente
+  broadcastDevicesStatus();
 });
 
-// Función para obtener solo los datos relevantes de los dispositivos
+/**
+ * Función para obtener la lista simplificada de dispositivos eWeLink
+ * Extrae solo la información relevante de cada dispositivo
+ */
 const getSimplifiedDevices = async () => {
-  // Si el archivo no existe, reportar un error directamente
-  if (!fs.existsSync('./token.json')) {
-    throw new Error('token.json not found, please run login.js first');
+  // Verificar si existe el archivo de token
+  if (!fs.existsSync("./token.json")) {
+    throw new Error("token.json not found, please run login.js first");
   }
 
-  // Obtener token
-  let LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
+  // Leer y configurar token de autenticación
+  let LoggedInfo = JSON.parse(fs.readFileSync("./token.json", "utf-8"));
   client.at = LoggedInfo.data?.accessToken;
-  client.region = LoggedInfo?.region || 'eu';
-  client.setUrl(LoggedInfo?.region || 'eu');
+  client.region = LoggedInfo?.region || "eu";
+  client.setUrl(LoggedInfo?.region || "eu");
 
-  // Comprobar si el token ha expirado y renovarlo si es necesario
+  // Renovar token si ha expirado pero el refresh token es válido
   if (
     LoggedInfo.data?.atExpiredTime < Date.now() &&
     LoggedInfo.data?.rtExpiredTime > Date.now()
   ) {
-    console.log('Token expired, refreshing token');
+    console.log("Token expired, refreshing token");
     const refreshStatus = await client.user.refreshToken({
       rt: LoggedInfo.data?.refreshToken,
     });
+
+    // Si la renovación fue exitosa, actualizar el archivo token.json
     if (refreshStatus.error === 0) {
       fs.writeFileSync(
-        './token.json',
+        "./token.json",
         JSON.stringify({
           status: 200,
           responseTime: 0,
           error: 0,
-          msg: '',
+          msg: "",
           data: {
             accessToken: refreshStatus?.data?.at,
-            atExpiredTime: Date.now() + 2592000000,
+            atExpiredTime: Date.now() + 2592000000, // 30 días
             refreshToken: refreshStatus?.data?.rt,
-            rtExpiredTime: Date.now() + 5184000000,
+            rtExpiredTime: Date.now() + 5184000000, // 60 días
           },
           region: client.region,
         })
       );
-      LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
+      LoggedInfo = JSON.parse(fs.readFileSync("./token.json", "utf-8"));
     }
   }
 
+  // Si el refresh token también ha expirado, informar al usuario
   if (LoggedInfo.data?.rtExpiredTime < Date.now()) {
-    console.log('Failed to refresh token, need to log in again to obtain token');
-    return { error: 1, msg: 'Token expired, please login again' };
+    console.log(
+      "Failed to refresh token, need to log in again to obtain token"
+    );
+    return { error: 1, msg: "Token expired, please login again" };
   }
 
-  // Obtener lista de dispositivos
+  // Obtener la lista de dispositivos
   try {
     let response = await client.device.getAllThingsAllPages({});
 
     if (response?.error === 0 && response?.data?.thingList) {
+      // Filtrar solo dispositivos (itemType=1) y mapear a formato simplificado
       const devices = response.data.thingList
-        .filter(thing => thing.itemType === 1)
-        .map(thing => {
+        .filter((thing) => thing.itemType === 1)
+        .map((thing) => {
           const device = thing.itemData;
 
-          // Crear un objeto simplificado con solo la información relevante
+          // Crear objeto con información básica del dispositivo
           const simplifiedDevice = {
             id: device.deviceid,
-            name: device.name || 'Unnamed Device',
-            type: device.extra?.uiid || 'Unknown',
+            name: device.name || "Unnamed Device",
+            type: device.extra?.uiid || "Unknown",
             online: device.online || false,
-            model: device.productModel || device.extra?.model || 'Unknown',
+            model: device.productModel || device.extra?.model || "Unknown",
           };
 
-          // Agregar información específica de estado según el tipo de dispositivo
+          // Añadir información específica según el tipo de dispositivo
           if (device.extra?.uiid === 1) {
-            // Dispositivo de un solo canal
-            simplifiedDevice.state = device.params?.switch || 'Unknown';
+            // Dispositivo de un solo canal (interruptor simple)
+            simplifiedDevice.state = device.params?.switch || "Unknown";
           } else if (device.extra?.uiid === 162) {
-            // Dispositivo de 3 vías
-            simplifiedDevice.channels = (device.params?.switches || []).map((sw, index) => ({
-              channel: index + 1,
-              name: getChannelName(index + 1), // Nombre personalizado del canal
-              state: sw.switch || 'Unknown'
-            }));
+            // Dispositivo de 3 vías (interruptor múltiple)
+            simplifiedDevice.channels = (device.params?.switches || []).map(
+              (sw, index) => ({
+                channel: index + 1,
+                name: getChannelName(index + 1), // Nombre personalizado
+                state: sw.switch || "Unknown",
+              })
+            );
           } else if (device.extra?.uiid === 102) {
-            // Dispositivo con sensor de temperatura y humedad
+            // Sensor de temperatura y humedad
             simplifiedDevice.temperature = device.params?.currentTemperature;
             simplifiedDevice.humidity = device.params?.currentHumidity;
           }
@@ -135,60 +159,98 @@ const getSimplifiedDevices = async () => {
       return {
         error: 0,
         total: devices.length,
-        devices: devices
+        devices: devices,
       };
     } else {
-      return { error: response.error, msg: response.msg || 'Error getting devices' };
+      return {
+        error: response.error,
+        msg: response.msg || "Error getting devices",
+      };
     }
   } catch (e) {
     console.error(e);
-    return { error: 1, msg: e.message || 'Error getting devices' };
+    return { error: 1, msg: e.message || "Error getting devices" };
   }
 };
 
-// Función para obtener el nombre personalizado del canal
+/**
+ * Función para obtener el nombre personalizado de un canal
+ * @param {number} channelNumber - Número del canal
+ * @returns {string} Nombre personalizado del canal
+ */
 const getChannelName = (channelNumber) => {
   switch (channelNumber) {
     case 1:
-      return 'POLICIA';
+      return "POLICIA";
     case 2:
-      return 'EMERGENCIA';
+      return "EMERGENCIA";
     case 3:
-      return 'BOMBEROS';
+      return "BOMBEROS";
     default:
-      return `Canal ${channelNumber}`; // Por defecto, si hay más canales
+      return `Canal ${channelNumber}`;
   }
 };
 
-// Función para controlar un dispositivo específico
+/**
+ * Función para transmitir el estado actual de los dispositivos a todos los clientes WebSocket
+ * Esta función debe llamarse periódicamente o cuando se detecte un cambio en algún dispositivo
+ */
+const broadcastDevicesStatus = async () => {
+  try {
+    // Obtener el estado actual de los dispositivos
+    const devices = await getSimplifiedDevices();
+
+    // Enviar la información actualizada a todos los clientes conectados
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(
+          JSON.stringify({
+            type: "devicesUpdate",
+            devices: devices.devices,
+          })
+        );
+      }
+    });
+  } catch (error) {
+    console.error("Error al transmitir estado de dispositivos:", error);
+  }
+};
+
+/**
+ * Función para controlar un dispositivo específico
+ * @param {string} deviceId - ID del dispositivo a controlar
+ * @param {object} params - Parámetros de control (ej: {switch: 'on'})
+ * @returns {object} Resultado de la operación
+ */
 const controlSpecificDevice = async (deviceId, params) => {
-  if (!fs.existsSync('./token.json')) {
-    throw new Error('token.json not found, please run login.js first');
+  // Verificar si existe el archivo de token
+  if (!fs.existsSync("./token.json")) {
+    throw new Error("token.json not found, please run login.js first");
   }
 
-  // Obtener token
-  let LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
+  // Leer y configurar token de autenticación
+  let LoggedInfo = JSON.parse(fs.readFileSync("./token.json", "utf-8"));
   client.at = LoggedInfo.data?.accessToken;
-  client.region = LoggedInfo?.region || 'eu';
-  client.setUrl(LoggedInfo?.region || 'eu');
+  client.region = LoggedInfo?.region || "eu";
+  client.setUrl(LoggedInfo?.region || "eu");
 
-  // Comprobar si el token ha expirado y renovarlo si es necesario
+  // Renovar token si ha expirado
   if (
     LoggedInfo.data?.atExpiredTime < Date.now() &&
     LoggedInfo.data?.rtExpiredTime > Date.now()
   ) {
-    console.log('Token expired, refreshing token');
+    console.log("Token expired, refreshing token");
     const refreshStatus = await client.user.refreshToken({
       rt: LoggedInfo.data?.refreshToken,
     });
     if (refreshStatus.error === 0) {
       fs.writeFileSync(
-        './token.json',
+        "./token.json",
         JSON.stringify({
           status: 200,
           responseTime: 0,
           error: 0,
-          msg: '',
+          msg: "",
           data: {
             accessToken: refreshStatus?.data?.at,
             atExpiredTime: Date.now() + 2592000000,
@@ -198,330 +260,136 @@ const controlSpecificDevice = async (deviceId, params) => {
           region: client.region,
         })
       );
-      LoggedInfo = JSON.parse(fs.readFileSync('./token.json', 'utf-8'));
+      LoggedInfo = JSON.parse(fs.readFileSync("./token.json", "utf-8"));
     }
   }
 
   if (LoggedInfo.data?.rtExpiredTime < Date.now()) {
-    console.log('Failed to refresh token, need to log in again to obtain token');
-    return { error: 1, msg: 'Token expired, please login again' };
+    console.log(
+      "Failed to refresh token, need to log in again to obtain token"
+    );
+    return { error: 1, msg: "Token expired, please login again" };
   }
 
+  // Enviar comando al dispositivo
   try {
-    console.log(`Attempting to control device ${deviceId} with params:`, params);
+    console.log(
+      `Attempting to control device ${deviceId} with params:`,
+      params
+    );
     const result = await client.device.setThingStatus({
-      type: 1,
-      id: deviceId,
-      params: params,
+      type: 1, // Tipo 1 = dispositivo
+      id: deviceId, // ID del dispositivo
+      params: params, // Parámetros de control
     });
 
-    console.log('Control result:', result);
+    console.log("Control result:", result);
 
-    // Enviar un mensaje a todos los clientes conectados
-    wss.clients.forEach(client => {
+    // Notificar a todos los clientes WebSocket conectados sobre el cambio específico
+    wss.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify({
-          type: 'deviceUpdate',
-          deviceId: deviceId,
-          params: params,
-        }));
+        client.send(
+          JSON.stringify({
+            type: "deviceUpdate",
+            deviceId: deviceId,
+            params: params,
+          })
+        );
       }
     });
 
+    // También transmitir el estado completo después de una breve pausa
+    // para asegurarnos de que el cambio se ha aplicado
+    setTimeout(broadcastDevicesStatus, 1000);
+
     return result;
   } catch (e) {
-    console.error('Error controlling device:', e);
-    return { error: 1, msg: e.message || 'Error controlling device' };
+    console.error("Error controlling device:", e);
+    return { error: 1, msg: e.message || "Error controlling device" };
   }
 };
 
-router.get('/login', async (ctx) => {
-  // Obtener URL de inicio de sesión
+// Ruta para iniciar el proceso de login OAuth
+router.get("/login", async (ctx) => {
+  // Generar URL de inicio de sesión
   const loginUrl = client.oauth.createLoginUrl({
-    redirectUrl: redirectUrl,
-    grantType: 'authorization_code',
-    state: randomString(10),
+    redirectUrl: redirectUrl, // URL de redirección después del login
+    grantType: "authorization_code", // Tipo de autorización
+    state: randomString(10), // Estado aleatorio para seguridad
   });
-  // Redirigir automáticamente a la URL de inicio de sesión
+  // Redirigir al usuario a la página de login
   ctx.redirect(loginUrl);
 });
 
-router.get('/redirectUrl', async (ctx) => {
+// Ruta que maneja la redirección después del login exitoso
+router.get("/redirectUrl", async (ctx) => {
   const { code, region } = ctx.request.query;
   console.log(code, region);
+
+  // Intercambiar código de autorización por token
   const res = await client.oauth.getToken({
     region,
     redirectUrl,
     code,
   });
-  res['region'] = region;
-  // Puedes escribir tu propio código aquí
-  fs.writeFileSync('./token.json', JSON.stringify(res));
+  res["region"] = region;
+
+  // Guardar token en archivo
+  fs.writeFileSync("./token.json", JSON.stringify(res));
   console.log(res);
   ctx.body = res;
 });
 
-// Nueva ruta para obtener dispositivos simplificados
-router.get('/devices', async (ctx) => {
+// Ruta para obtener la lista de dispositivos
+router.get("/devices", async (ctx) => {
   try {
     const devices = await getSimplifiedDevices();
     ctx.body = devices;
   } catch (e) {
     ctx.status = 500;
-    ctx.body = { error: 1, msg: e.message || 'Internal Server Error' };
+    ctx.body = { error: 1, msg: e.message || "Internal Server Error" };
   }
 });
 
 // Ruta para controlar un dispositivo específico
-router.post('/control/:deviceId', async (ctx) => {
+router.post("/control/:deviceId", async (ctx) => {
   try {
-    const { deviceId } = ctx.params;
-    const params = ctx.request.body;
+    const { deviceId } = ctx.params; // Obtener ID del dispositivo de la URL
+    const params = ctx.request.body; // Obtener parámetros del cuerpo de la petición
     const result = await controlSpecificDevice(deviceId, params);
     ctx.body = result;
   } catch (e) {
     ctx.status = 500;
-    ctx.body = { error: 1, msg: e.message || 'Internal Server Error' };
+    ctx.body = { error: 1, msg: e.message || "Internal Server Error" };
   }
 });
 
-// Ruta para obtener una página HTML que muestra los dispositivos simplificados
-router.get('/devices-ui', async (ctx) => {
-  try {
-    const devicesData = await getSimplifiedDevices();
+// Añadir un intervalo para actualizar regularmente el estado de los dispositivos
+// Esto garantiza que se detecten cambios realizados manualmente
+const devicePollingInterval = setInterval(broadcastDevicesStatus, 5000);
 
-    ctx.type = 'html';
-    ctx.body = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>eWeLink Devices</title>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <style>
-          body {
-            font-family: Arial, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background-color: #f5f5f5;
-          }
-          .container {
-            max-width: 1000px;
-            margin: 0 auto;
-          }
-          h1 {
-            color: #333;
-            text-align: center;
-          }
-          .device-list {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
-            margin-top: 20px;
-          }
-          .device {
-            background-color: white;
-            border-radius: 8px;
-            padding: 15px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-          }
-          .device h3 {
-            margin-top: 0;
-            color: #2c3e50;
-          }
-          .status-badge {
-            display: inline-block;
-            padding: 3px 8px;
-            border-radius: 12px;
-            font-size: 12px;
-            margin-left: 8px;
-          }
-          .online {
-            background-color: #2ecc71;
-            color: white;
-          }
-          .offline {
-            background-color: #e74c3c;
-            color: white;
-          }
-          .device-info {
-            margin: 10px 0;
-          }
-          .controls {
-            margin-top: 15px;
-          }
-          button {
-            background-color: #3498db;
-            color: white;
-            border: none;
-            padding: 8px 15px;
-            border-radius: 4px;
-            cursor: pointer;
-            margin-right: 10px;
-            margin-bottom: 8px;
-          }
-          button:hover {
-            background-color: #2980b9;
-          }
-          .channel {
-            margin-bottom: 10px;
-            padding: 8px;
-            background-color: #f8f9fa;
-            border-radius: 4px;
-          }
-          .success {
-            color: green;
-            margin-top: 10px;
-          }
-          .error {
-            color: red;
-            margin-top: 10px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>eWeLink Devices (${devicesData.total || 0})</h1>
-          <div class="device-list" id="deviceList">
-            ${devicesData.error ? `<p class="error">${devicesData.msg}</p>` : ''}
-          </div>
-        </div>
-
-        <script>
-          // Conexión WebSocket
-          const ws = new WebSocket('ws://127.0.0.1:8000'); // Asegúrate de que la URL sea correcta
-
-          ws.onmessage = (event) => {
-            const message = JSON.parse(event.data);
-            
-            if (message.type === 'deviceUpdate') {
-              const { deviceId, params } = message;
-              // Aquí puedes actualizar el estado del dispositivo en la interfaz
-              const deviceElement = document.getElementById(\`device-\${deviceId}\`);
-              if (deviceElement) {
-                // Actualiza el estado del dispositivo según los parámetros recibidos
-                if (params.switch !== undefined) {
-                  const statusBadge = deviceElement.querySelector('.status-badge');
-                  statusBadge.textContent = params.switch === 'on' ? 'ONLINE' : 'OFFLINE';
-                  statusBadge.className = \`status-badge \${params.switch === 'on' ? 'online' : 'offline'}\`;
-                }
-                // Actualiza otros estados según sea necesario
-              }
-            }
-          };
-
-          // Los datos de dispositivos que se obtuvieron del servidor
-          const devicesData = ${JSON.stringify(devicesData)};
-
-          function renderDevices() {
-            const deviceListElement = document.getElementById('deviceList');
-
-            if (devicesData.error) {
-              deviceListElement.innerHTML = \`<p class="error">\${devicesData.msg}</p>\`;
-              return;
-            }
-
-            const devices = devicesData.devices || [];
-
-            if (devices.length === 0) {
-              deviceListElement.innerHTML = '<p>No devices found</p>';
-              return;
-            }
-
-            let html = '';
-
-            devices.forEach(device => {
-              html += \`
-                <div class="device" id="device-\${device.id}">
-                  <h3>
-                    \${device.name}
-                    <span class="status-badge \${device.online ? 'online' : 'offline'}">
-                      \${device.online ? 'ONLINE' : 'OFFLINE'}
-                    </span>
-                  </h3>
-                  <div class="device-info">
-                    <p><strong>Model:</strong> \${device.model}</p>
-                    <p><strong>Type:</strong> \${device.type}</p>
-              \`;
-
-              // Mostrar estado específico según el tipo de dispositivo
-              if (device.state) {
-                html += \`<p><strong>State:</strong> \${device.state}</p>\`;
-              }
-
-              if (device.channels) {
-                device.channels.forEach(channel => {
-                  html += \`
-                    <div class="channel">
-                      <span>\${channel.name}: \${channel.state}</span>
-                      <div style="margin-top: 5px;">
-                        <button onclick="controlDevice('\${device.id}', {switches: [{switch: 'on', outlet: \${channel.channel - 1}}]})">ON</button>
-                        <button onclick="controlDevice('\${device.id}', {switches: [{switch: 'off', outlet: \${channel.channel - 1}}]})">OFF</button>
-                      </div>
-                    </div>
-                  \`;
-                });
-              }
-
-              html += \`
-                  </div>
-                  <div id="status-\${device.id}"></div>
-                </div>
-              \`;
-            });
-
-            deviceListElement.innerHTML = html;
-          }
-
-          async function controlDevice(deviceId, params) {
-            try {
-              const statusElement = document.getElementById(\`status-\${deviceId}\`);
-              statusElement.innerHTML = '<p>Processing...</p>';
-
-              const response = await fetch(\`/control/\${deviceId}\`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(params)
-              });
-
-              const result = await response.json();
-
-              if (result.error === 0) {
-                statusElement.innerHTML = '<p class="success">Command sent successfully!</p>';
-                // Esperar 2 segundos y recargar los dispositivos
-                setTimeout(() => {
-                  window.location.reload();
-                }, 2000);
-              } else {
-                statusElement.innerHTML = \`<p class="error">Error: \${result.msg || 'Unknown error'}</p>\`;
-              }
-            } catch (error) {
-              const statusElement = document.getElementById(\`status-\${deviceId}\`);
-              statusElement.innerHTML = \`<p class="error">Error: \${error.message || 'Unknown error'}</p>\`;
-            }
-          }
-
-          // Renderizar los dispositivos cuando la página se cargue
-          window.onload = renderDevices;
-        </script>
-      </body>
-      </html>
-    `;
-  } catch (e) {
-    ctx.status = 500;
-    ctx.body = `<html><body><h1>Error</h1><p>${e.message || 'Internal Server Error'}</p></body></html>`;
-  }
+// Agregar manejo de cierre del servidor para limpiar el intervalo
+process.on("SIGINT", () => {
+  clearInterval(devicePollingInterval);
+  server.close(() => {
+    console.log("Servidor cerrado");
+    process.exit(0);
+  });
 });
 
+// Registrar rutas en la aplicación
 app.use(router.routes());
 
-console.info('Server is running at http://127.0.0.1:8000/');
-console.info('Login URL: http://127.0.0.1:8000/login, automatically open browser in three seconds');
-console.info('Simplified Devices URL: http://127.0.0.1:8000/devices (JSON API)');
-console.info('Devices UI URL: http://127.0.0.1:8000/devices-ui (Web Interface)');
+// Mensajes informativos en la consola
+console.info("Server is running at http://127.0.0.1:8000/");
+console.info(
+  "Login URL: http://127.0.0.1:8000/login, automatically open browser in three seconds"
+);
+console.info(
+  "Simplified Devices URL: http://127.0.0.1:8000/devices (JSON API)"
+);
 
+// Abrir navegador automáticamente después de 3 segundos
 setTimeout(async () => {
   await open("http://127.0.0.1:8000/login");
 }, 3000);
