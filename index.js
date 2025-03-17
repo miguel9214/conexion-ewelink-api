@@ -140,13 +140,21 @@ const getSimplifiedDevices = async () => {
             simplifiedDevice.state = device.params?.switch || "Unknown";
           } else if (device.extra?.uiid === 162) {
             // Dispositivo de 3 vías (interruptor múltiple)
-            simplifiedDevice.channels = (device.params?.switches || []).map(
-              (sw, index) => ({
-                channel: index + 1,
-                name: getChannelName(index + 1), // Nombre personalizado
-                state: sw.switch || "Unknown",
-              })
-            );
+            const configuredSwitches = device.params?.switches || [];
+            
+            // Obtener los nombres de canales desde ck_channel_name
+            const channelNames = device.tags?.ck_channel_name || {};
+            
+            // Solo mostrar los switches que tengan un nombre configurado en ck_channel_name
+            simplifiedDevice.channels = configuredSwitches
+              .filter((_, index) => channelNames[index] !== undefined)
+              .map((sw, index) => {
+                return {
+                  channel: index + 1,
+                  name: channelNames[index] || `Canal ${index + 1}`,
+                  state: sw.switch || "Unknown",
+                };
+              });
           } else if (device.extra?.uiid === 102) {
             // Sensor de temperatura y humedad
             simplifiedDevice.temperature = device.params?.currentTemperature;
