@@ -129,7 +129,6 @@ dist
 .yarn/install-state.gz
 .pnp.*
 
-
-config.js
 token.json
+.env
 .DS_Store
