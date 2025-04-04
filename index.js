@@ -391,8 +391,3 @@ console.info(
 console.info(
   "Simplified Devices URL: http://127.0.0.1:8000/devices (JSON API)"
 );
-
-// Abrir navegador automáticamente después de 3 segundos
-setTimeout(async () => {
-  await open("http://127.0.0.1:8000/login");
-}, 3000);
