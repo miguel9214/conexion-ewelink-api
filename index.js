@@ -4,7 +4,7 @@ import Router from "koa-router";
 import cors from "@koa/cors";
 import { client, redirectUrl, randomString, PORT } from "./config.js";
 import fs from "fs";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, WebSocket } from "ws";
 import dotenv from "dotenv";
 
 dotenv.config();
